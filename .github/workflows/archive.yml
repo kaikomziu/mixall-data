@@ -1,0 +1,77 @@
+# 毎日 03:30（日本時間）に、MixAll +（二世代）のデータを Supabase から data/ へ移して GitHub Pages で公開する
+name: Archive MixAll data
+
+on:
+  schedule:
+    - cron: '30 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: archive
+  cancel-in-progress: false
+
+env:
+  MIXALL_API: ${{ vars.MIXALL_API }}
+  MIXALL_DATA_URL: ${{ vars.MIXALL_DATA_URL }}
+  MIXALL_ARCHIVE_JOB_SECRET: ${{ secrets.MIXALL_ARCHIVE_JOB_SECRET }}
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/archive.mjs export
+      - id: commit
+        run: |
+          git add -A data
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -q -m "archive $(date -u +%F)"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: export
+    if: needs.export.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - run: mkdir _site && cp -r data _site/ && touch _site/.nojekyll && echo 'MixAll data' > _site/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  purge:
+    needs: [export, deploy]
+    if: always() && needs.export.result == 'success' && needs.deploy.result != 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/archive.mjs purge
