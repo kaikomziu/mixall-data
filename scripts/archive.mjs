@@ -40,25 +40,30 @@ const indexPath = (store) => join(dirOf(store), '_index.json');
 
 async function exportAll() {
   const { stores } = await call('stores');
-  let changed = 0;
+  let changed = 0, errors = 0;
   for (const store of stores) {
-    const added = [];
-    let after = '';
-    for (;;) {
-      const page = await call('export', { store, after });
-      for (const f of page.files) {
-        mkdirSync(dirOf(store), { recursive: true });
-        writeFileSync(join(dirOf(store), `${f.name}.json`), JSON.stringify(f.box));
-        added.push(f.key);
+    const added = [], removed = [];
+    // 途中で失敗しても、そこまでに書けた分は索引に載せて残す（続きは次の日）
+    try {
+      let after = '';
+      for (;;) {
+        const page = await call('export', { store, after });
+        for (const f of page.files) {
+          mkdirSync(dirOf(store), { recursive: true });
+          writeFileSync(join(dirOf(store), `${f.name}.json`), JSON.stringify(f.box));
+          added.push(f.key);
+        }
+        if (page.done || !page.next) break;
+        after = page.next;
       }
-      if (page.done || !page.next) break;
-      after = page.next;
-    }
-    const { tombs } = await call('tombs', { store });
-    const removed = [];
-    for (const t of tombs) {
-      const file = join(dirOf(store), `${t.name}.json`);
-      if (existsSync(file)) { rmSync(file); removed.push(t.key); }
+      const { tombs } = await call('tombs', { store });
+      for (const t of tombs) {
+        const file = join(dirOf(store), `${t.name}.json`);
+        if (existsSync(file)) { rmSync(file); removed.push(t.key); }
+      }
+    } catch (e) {
+      console.error(`${store}: ${e.message}`);
+      errors += 1;
     }
     if (!added.length && !removed.length) continue;
     const existing = existsSync(indexPath(store)) ? JSON.parse(readFileSync(indexPath(store), 'utf8')) : null;
@@ -69,6 +74,7 @@ async function exportAll() {
     changed += 1;
   }
   console.log(changed ? `${changed} ストアを更新` : '書き出すものはありません');
+  if (errors) console.log(`::warning::${errors} ストアで書き出しが途中で止まりました（次の日に続きから）`);
 }
 
 // 公開された索引が手元と同じになるまで待つ（GitHub Pages の CDN は最大10分キャッシュする。
